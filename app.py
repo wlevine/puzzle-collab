@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, session, redirect, url_for, send_from_directory
-import sqlite3
+import psycopg2
+import psycopg2.extras
 import os
 from functools import wraps
 
@@ -8,12 +9,13 @@ app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key-change-this')
 
 # Configuration
 PASSWORD = os.environ.get('APP_PASSWORD', 'puzzle2025')  # Change this!
-DATABASE = 'puzzle.db'
+
+# Database configuration
+DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://puzzle_user:puzzle_pass@localhost:5432/puzzle_db')
 
 def get_db():
     """Get database connection"""
-    conn = sqlite3.connect(DATABASE)
-    conn.row_factory = sqlite3.Row  # This allows us to access columns by name
+    conn = psycopg2.connect(DATABASE_URL)
     return conn
 
 def init_db():
@@ -28,7 +30,7 @@ def init_db():
     )''')
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS subjects (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         name TEXT UNIQUE,
         notes TEXT DEFAULT ''
     )''')
@@ -43,7 +45,7 @@ def init_db():
     
     # Insert pages 1-100 if they don't exist
     for i in range(1, 101):
-        cursor.execute("INSERT OR IGNORE INTO pages (id, notes) VALUES (?, '')", (i,))
+        cursor.execute("INSERT INTO pages (id, notes) VALUES (%s, '') ON CONFLICT (id) DO NOTHING", (i,))
     
     conn.commit()
     conn.close()
@@ -95,15 +97,15 @@ def logout():
 @require_api_auth
 def get_pages():
     conn = get_db()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     
     cursor.execute('''
         SELECT p.id, p.notes,
-               GROUP_CONCAT(s.name) as subjects
+               STRING_AGG(s.name, ',') as subjects
         FROM pages p
         LEFT JOIN page_subjects ps ON p.id = ps.page_id
         LEFT JOIN subjects s ON ps.subject_id = s.id
-        GROUP BY p.id
+        GROUP BY p.id, p.notes
         ORDER BY p.id
     ''')
     
@@ -114,7 +116,7 @@ def get_pages():
     for row in rows:
         pages.append({
             'id': row['id'],
-            'notes': row['notes'],
+            'notes': row['notes'] or '',
             'subjects': row['subjects']
         })
     
@@ -124,16 +126,16 @@ def get_pages():
 @require_api_auth
 def get_page(page_id):
     conn = get_db()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     
     cursor.execute('''
         SELECT p.id, p.notes,
-               GROUP_CONCAT(s.name) as subjects
+               STRING_AGG(s.name, ',') as subjects
         FROM pages p
         LEFT JOIN page_subjects ps ON p.id = ps.page_id
         LEFT JOIN subjects s ON ps.subject_id = s.id
-        WHERE p.id = ?
-        GROUP BY p.id
+        WHERE p.id = %s
+        GROUP BY p.id, p.notes
     ''', (page_id,))
     
     row = cursor.fetchone()
@@ -146,7 +148,7 @@ def get_page(page_id):
     
     return jsonify({
         'id': row['id'],
-        'notes': row['notes'],
+        'notes': row['notes'] or '',
         'subjects': subjects
     })
 
@@ -162,26 +164,26 @@ def update_page(page_id):
     
     try:
         # Update page notes
-        cursor.execute('UPDATE pages SET notes = ? WHERE id = ?', (notes, page_id))
+        cursor.execute('UPDATE pages SET notes = %s WHERE id = %s', (notes, page_id))
         
         # Clear existing subjects for this page
-        cursor.execute('DELETE FROM page_subjects WHERE page_id = ?', (page_id,))
+        cursor.execute('DELETE FROM page_subjects WHERE page_id = %s', (page_id,))
         
         # Add subjects
         for subject_name in subjects:
             subject_name = subject_name.strip()
             if subject_name:
                 # Insert subject if it doesn't exist
-                cursor.execute('INSERT OR IGNORE INTO subjects (name, notes) VALUES (?, "")', (subject_name,))
+                cursor.execute('INSERT INTO subjects (name, notes) VALUES (%s, \'\') ON CONFLICT (name) DO NOTHING', (subject_name,))
                 
                 # Get subject ID
-                cursor.execute('SELECT id FROM subjects WHERE name = ?', (subject_name,))
+                cursor.execute('SELECT id FROM subjects WHERE name = %s', (subject_name,))
                 subject_row = cursor.fetchone()
                 
                 if subject_row:
                     # Link page to subject
-                    cursor.execute('INSERT INTO page_subjects (page_id, subject_id) VALUES (?, ?)', 
-                                 (page_id, subject_row['id']))
+                    cursor.execute('INSERT INTO page_subjects (page_id, subject_id) VALUES (%s, %s)', 
+                                 (page_id, subject_row[0]))
         
         conn.commit()
         conn.close()
@@ -196,11 +198,11 @@ def update_page(page_id):
 @require_api_auth
 def get_subjects():
     conn = get_db()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     
     cursor.execute('''
         SELECT s.id, s.name, s.notes,
-               GROUP_CONCAT(ps.page_id) as pages
+               STRING_AGG(ps.page_id::text, ',') as pages
         FROM subjects s
         LEFT JOIN page_subjects ps ON s.id = ps.subject_id
         GROUP BY s.id, s.name, s.notes
@@ -219,7 +221,7 @@ def get_subjects():
         subjects.append({
             'id': row['id'],
             'name': row['name'],
-            'notes': row['notes'],
+            'notes': row['notes'] or '',
             'pages': pages
         })
     
@@ -233,14 +235,14 @@ def get_subject(subject_name):
     subject_name = urllib.parse.unquote(subject_name)
     
     conn = get_db()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     
     cursor.execute('''
         SELECT s.id, s.name, s.notes,
-               GROUP_CONCAT(ps.page_id) as pages
+               STRING_AGG(ps.page_id::text, ',') as pages
         FROM subjects s
         LEFT JOIN page_subjects ps ON s.id = ps.subject_id
-        WHERE s.name = ?
+        WHERE s.name = %s
         GROUP BY s.id, s.name, s.notes
     ''', (subject_name,))
     
@@ -257,7 +259,7 @@ def get_subject(subject_name):
     return jsonify({
         'id': row['id'],
         'name': row['name'],
-        'notes': row['notes'],
+        'notes': row['notes'] or '',
         'pages': pages
     })
 
@@ -275,7 +277,7 @@ def update_subject(subject_name):
     cursor = conn.cursor()
     
     try:
-        cursor.execute('UPDATE subjects SET notes = ? WHERE name = ?', (notes, subject_name))
+        cursor.execute('UPDATE subjects SET notes = %s WHERE name = %s', (notes, subject_name))
         conn.commit()
         conn.close()
         return jsonify({'success': True})
@@ -293,6 +295,7 @@ if __name__ == '__main__':
     
     print(f"Server starting on port {port}")
     print(f"Password: {PASSWORD}")
+    print(f"Database: {DATABASE_URL}")
     
     # For production deployment
     app.run(host='0.0.0.0', port=port, debug=False)
