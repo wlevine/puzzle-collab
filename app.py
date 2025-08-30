@@ -1,16 +1,16 @@
-from flask import Flask, request, jsonify, session, redirect, url_for, send_from_directory
+from flask import Flask, request, render_template_string, redirect, url_for, session, flash
 import psycopg2
 import psycopg2.extras
 import os
 from functools import wraps
 
-app = Flask(__name__, static_folder='public', static_url_path='')
+from templates import LOGIN_TEMPLATE, PAGES_LIST_TEMPLATE, SUBJECTS_LIST_TEMPLATE, SUBJECT_DETAIL_TEMPLATE, PAGE_DETAIL_TEMPLATE
+
+app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key-change-this')
 
 # Configuration
-PASSWORD = os.environ.get('APP_PASSWORD', 'puzzle2025')  # Change this!
-
-# Database configuration
+PASSWORD = os.environ.get('APP_PASSWORD', 'puzzle2025')
 DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://puzzle_user:puzzle_pass@localhost:5432/puzzle_db')
 
 def get_db():
@@ -55,47 +55,70 @@ def require_auth(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if not session.get('authenticated'):
-            return redirect('/login')
+            return redirect(url_for('login_page'))
         return f(*args, **kwargs)
     return decorated_function
 
-def require_api_auth(f):
-    """API authentication decorator"""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if not session.get('authenticated'):
-            return jsonify({'error': 'Unauthorized'}), 401
-        return f(*args, **kwargs)
-    return decorated_function
+def process_notes_for_display(notes):
+    """Convert [[Subject]] and {{Page X}} to HTML links"""
+    if not notes:
+        return ''
+    
+    import re
+    import html
+    
+    # Escape HTML first
+    processed = html.escape(notes)
+    
+    # Convert [[Subject]] to links - need to get subject ID from DB
+    def replace_subject_link(match):
+        subject_name = match.group(1)
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('SELECT id FROM subjects WHERE name = %s', (subject_name,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return f'<a href="{url_for("subject_page", subject_id=row[0])}" class="cross-reference">{html.escape(subject_name)}</a>'
+        return match.group(0)  # Return original if subject not found
+    
+    processed = re.sub(r'\[\[([^\]]+)\]\]', replace_subject_link, processed)
+    
+    # Convert {{Page X}} to links
+    processed = re.sub(r'\{\{Page (\d+)\}\}', 
+                      lambda m: f'<a href="{url_for("page_detail", page_id=int(m.group(1)))}" class="cross-reference">Page {m.group(1)}</a>', 
+                      processed)
+    
+    # Convert line breaks to HTML
+    processed = processed.replace('\n', '<br>')
+    
+    return processed
+
 
 # Routes
-@app.route('/')
-@require_auth
-def index():
-    return send_from_directory('public', 'index.html')
-
 @app.route('/login')
 def login_page():
-    return send_from_directory('public', 'login.html')
+    error = request.args.get('error')
+    return render_template_string(LOGIN_TEMPLATE, error=error)
 
 @app.route('/login', methods=['POST'])
 def login():
     password = request.form.get('password')
     if password == PASSWORD:
         session['authenticated'] = True
-        return redirect('/')
+        return redirect(url_for('index'))
     else:
-        return redirect('/login?error=1')
+        return redirect(url_for('login_page', error=1))
 
 @app.route('/logout')
 def logout():
     session.clear()
-    return redirect('/login')
+    return redirect(url_for('login_page'))
 
-# API Routes
-@app.route('/api/pages')
-@require_api_auth
-def get_pages():
+@app.route('/')
+@require_auth
+def index():
+    """Homepage with all pages grid"""
     conn = get_db()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     
@@ -109,22 +132,15 @@ def get_pages():
         ORDER BY p.id
     ''')
     
-    rows = cursor.fetchall()
+    pages = cursor.fetchall()
     conn.close()
     
-    pages = []
-    for row in rows:
-        pages.append({
-            'id': row['id'],
-            'notes': row['notes'] or '',
-            'subjects': row['subjects']
-        })
-    
-    return jsonify(pages)
+    return render_template_string(PAGES_LIST_TEMPLATE, pages=pages)
 
-@app.route('/api/pages/<int:page_id>')
-@require_api_auth
-def get_page(page_id):
+@app.route('/pages/<int:page_id>')
+@require_auth
+def page_detail(page_id):
+    """Individual page view/edit"""
     conn = get_db()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     
@@ -138,26 +154,28 @@ def get_page(page_id):
         GROUP BY p.id, p.notes
     ''', (page_id,))
     
-    row = cursor.fetchone()
+    page = cursor.fetchone()
     conn.close()
     
-    if not row:
-        return jsonify({'error': 'Page not found'}), 404
+    if not page:
+        flash('Page not found')
+        return redirect(url_for('index'))
     
-    subjects = row['subjects'].split(',') if row['subjects'] else []
+    subjects_list = page['subjects'].split(',') if page['subjects'] else []
+    notes_html = process_notes_for_display(page['notes'])
     
-    return jsonify({
-        'id': row['id'],
-        'notes': row['notes'] or '',
-        'subjects': subjects
-    })
+    return render_template_string(PAGE_DETAIL_TEMPLATE, 
+                                page=page, 
+                                subjects_list=subjects_list,
+                                notes_html=notes_html)
 
-@app.route('/api/pages/<int:page_id>', methods=['POST'])
-@require_api_auth
+@app.route('/pages/<int:page_id>', methods=['POST'])
+@require_auth
 def update_page(page_id):
-    data = request.get_json()
-    notes = data.get('notes', '')
-    subjects = data.get('subjects', [])
+    """Update page data"""
+    notes = request.form.get('notes', '')
+    subjects_str = request.form.get('subjects', '')
+    subjects = [s.strip() for s in subjects_str.split(',') if s.strip()]
     
     conn = get_db()
     cursor = conn.cursor()
@@ -171,69 +189,55 @@ def update_page(page_id):
         
         # Add subjects
         for subject_name in subjects:
-            subject_name = subject_name.strip()
-            if subject_name:
-                # Insert subject if it doesn't exist
-                cursor.execute('INSERT INTO subjects (name, notes) VALUES (%s, \'\') ON CONFLICT (name) DO NOTHING', (subject_name,))
-                
-                # Get subject ID
-                cursor.execute('SELECT id FROM subjects WHERE name = %s', (subject_name,))
-                subject_row = cursor.fetchone()
-                
-                if subject_row:
-                    # Link page to subject
-                    cursor.execute('INSERT INTO page_subjects (page_id, subject_id) VALUES (%s, %s)', 
-                                 (page_id, subject_row[0]))
+            # Insert subject if it doesn't exist
+            cursor.execute('INSERT INTO subjects (name, notes) VALUES (%s, \'\') ON CONFLICT (name) DO NOTHING', (subject_name,))
+            
+            # Get subject ID
+            cursor.execute('SELECT id FROM subjects WHERE name = %s', (subject_name,))
+            subject_row = cursor.fetchone()
+            
+            if subject_row:
+                # Link page to subject
+                cursor.execute('INSERT INTO page_subjects (page_id, subject_id) VALUES (%s, %s)', 
+                             (page_id, subject_row[0]))
         
         conn.commit()
-        conn.close()
-        return jsonify({'success': True})
+        flash('Page updated successfully!')
         
     except Exception as e:
         conn.rollback()
-        conn.close()
-        return jsonify({'error': str(e)}), 500
+        flash(f'Error updating page: {str(e)}')
+    
+    conn.close()
+    return redirect(url_for('page_detail', page_id=page_id))
 
-@app.route('/api/subjects')
-@require_api_auth
-def get_subjects():
+@app.route('/subjects')
+@require_auth
+def subjects_list():
+    """List all subjects (excluding empty ones with no notes)"""
     conn = get_db()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     
     cursor.execute('''
         SELECT s.id, s.name, s.notes,
-               STRING_AGG(ps.page_id::text, ',') as pages
+               STRING_AGG(ps.page_id::text, ',') as pages,
+               COUNT(ps.page_id) as page_count
         FROM subjects s
         LEFT JOIN page_subjects ps ON s.id = ps.subject_id
         GROUP BY s.id, s.name, s.notes
+        HAVING COUNT(ps.page_id) > 0 OR (s.notes IS NOT NULL AND s.notes != '')
         ORDER BY s.name
     ''')
     
-    rows = cursor.fetchall()
+    subjects = cursor.fetchall()
     conn.close()
     
-    subjects = []
-    for row in rows:
-        pages = []
-        if row['pages']:
-            pages = [int(p) for p in row['pages'].split(',')]
-        
-        subjects.append({
-            'id': row['id'],
-            'name': row['name'],
-            'notes': row['notes'] or '',
-            'pages': pages
-        })
-    
-    return jsonify(subjects)
+    return render_template_string(SUBJECTS_LIST_TEMPLATE, subjects=subjects)
 
-@app.route('/api/subjects/<path:subject_name>')
-@require_api_auth
-def get_subject(subject_name):
-    # URL decode the subject name
-    import urllib.parse
-    subject_name = urllib.parse.unquote(subject_name)
-    
+@app.route('/subjects/<int:subject_id>')
+@require_auth
+def subject_page(subject_id):
+    """Individual subject view/edit"""
     conn = get_db()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     
@@ -242,60 +246,51 @@ def get_subject(subject_name):
                STRING_AGG(ps.page_id::text, ',') as pages
         FROM subjects s
         LEFT JOIN page_subjects ps ON s.id = ps.subject_id
-        WHERE s.name = %s
+        WHERE s.id = %s
         GROUP BY s.id, s.name, s.notes
-    ''', (subject_name,))
+    ''', (subject_id,))
     
-    row = cursor.fetchone()
+    subject = cursor.fetchone()
     conn.close()
     
-    if not row:
-        return jsonify({'error': 'Subject not found'}), 404
+    if not subject:
+        flash('Subject not found')
+        return redirect(url_for('subjects_list'))
     
-    pages = []
-    if row['pages']:
-        pages = [int(p) for p in row['pages'].split(',')]
+    page_ids = []
+    if subject['pages']:
+        page_ids = [int(p) for p in subject['pages'].split(',')]
     
-    return jsonify({
-        'id': row['id'],
-        'name': row['name'],
-        'notes': row['notes'] or '',
-        'pages': pages
-    })
+    notes_html = process_notes_for_display(subject['notes'])
+    
+    return render_template_string(SUBJECT_DETAIL_TEMPLATE, 
+                                subject=subject, 
+                                page_ids=page_ids,
+                                notes_html=notes_html)
 
-@app.route('/api/subjects/<path:subject_name>', methods=['POST'])
-@require_api_auth
-def update_subject(subject_name):
-    # URL decode the subject name
-    import urllib.parse
-    subject_name = urllib.parse.unquote(subject_name)
-    
-    data = request.get_json()
-    notes = data.get('notes', '')
+@app.route('/subjects/<int:subject_id>', methods=['POST'])
+@require_auth
+def update_subject(subject_id):
+    """Update subject notes"""
+    notes = request.form.get('notes', '')
     
     conn = get_db()
     cursor = conn.cursor()
     
     try:
-        cursor.execute('UPDATE subjects SET notes = %s WHERE name = %s', (notes, subject_name))
+        cursor.execute('UPDATE subjects SET notes = %s WHERE id = %s', (notes, subject_id))
         conn.commit()
-        conn.close()
-        return jsonify({'success': True})
+        flash('Subject updated successfully!')
     except Exception as e:
         conn.rollback()
-        conn.close()
-        return jsonify({'error': str(e)}), 500
+        flash(f'Error updating subject: {str(e)}')
+    
+    conn.close()
+    return redirect(url_for('subject_page', subject_id=subject_id))
 
 if __name__ == '__main__':
-    # Initialize database on startup
     init_db()
-    
-    # Get port from environment variable (for deployment) or default to 5000
     port = int(os.environ.get('PORT', 5000))
-    
     print(f"Server starting on port {port}")
-    print(f"Password: {PASSWORD}")
     print(f"Database: {DATABASE_URL}")
-    
-    # For production deployment
     app.run(host='0.0.0.0', port=port, debug=False)
