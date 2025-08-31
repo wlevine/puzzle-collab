@@ -10,7 +10,7 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key-change-this')
 
 # Configuration
-PASSWORD = os.environ.get('APP_PASSWORD', 'puzzle2025')
+PASSWORD = os.environ['APP_PASSWORD']
 DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://puzzle_user:puzzle_pass@localhost:5432/puzzle_db')
 
 def get_db():
