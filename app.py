@@ -231,6 +231,10 @@ def subjects_list():
     
     subjects = cursor.fetchall()
     conn.close()
+
+    for i in range(len(subjects)):
+        page_ids = sorted([int(p) for p in subjects[i]['pages'].split(',')])
+        subjects[i]['pages'] = ','.join(str(p) for p in page_ids)
     
     return render_template_string(SUBJECTS_LIST_TEMPLATE, subjects=subjects)
 
@@ -259,7 +263,7 @@ def subject_page(subject_id):
     
     page_ids = []
     if subject['pages']:
-        page_ids = [int(p) for p in subject['pages'].split(',')]
+        page_ids = sorted([int(p) for p in subject['pages'].split(',')])
     
     notes_html = process_notes_for_display(subject['notes'])
     
