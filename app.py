@@ -233,8 +233,12 @@ def subjects_list():
     conn.close()
 
     for i in range(len(subjects)):
-        page_ids = sorted([int(p) for p in subjects[i]['pages'].split(',')])
-        subjects[i]['pages'] = ','.join(str(p) for p in page_ids)
+        if subjects[i]['pages']:
+            page_ids = sorted([int(p) for p in subjects[i]['pages'].split(',')])
+            subjects[i]['pages'] = ','.join(str(p) for p in page_ids)
+        else:
+            print(f"subjects[i]['pages'] None for {subjects[i]['name']}")
+            subjects[i]['pages'] = ''
     
     return render_template_string(SUBJECTS_LIST_TEMPLATE, subjects=subjects)
 
