@@ -214,10 +214,13 @@ COMMON_HEADER = '''
         <div class="nav-buttons">
             <a href="{{ url_for('index') }}" class="nav-button">All Pages</a>
             <a href="{{ url_for('subjects_list') }}" class="nav-button">All Subjects</a>
+            {% for user in workspace_users %}
+                <a href="{{ url_for('user_workspace', username=user) }}" class="nav-button">{{ user }}</a>
+            {% endfor %}
             <a href="{{ url_for('logout') }}" class="nav-button">Logout</a>
         </div>
     </header>
-    
+
     <main class="main-content">
         {% with messages = get_flashed_messages() %}
             {% if messages %}
@@ -392,6 +395,474 @@ PAGE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
         {% endif %}
 ''' + COMMON_FOOTER
 
+WORKSPACE_TEMPLATE = '''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Puzzle Solver - {{ username }}'s Workspace</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #edf2f7;
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .navbar {
+            background: white;
+            padding: 0.5rem 1.5rem;
+            border-bottom: 1px solid #e2e8f0;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+            font-size: 0.9rem;
+            flex-wrap: wrap;
+        }
+
+        .navbar .title {
+            color: #667eea;
+            font-weight: 600;
+            font-size: 1rem;
+        }
+
+        .navbar a {
+            color: #4a5568;
+            text-decoration: none;
+            padding: 0.25rem 0.5rem;
+            border-radius: 3px;
+            transition: background 0.2s;
+        }
+
+        .navbar a:hover {
+            background: #f7fafc;
+            color: #667eea;
+        }
+
+        .navbar .divider {
+            color: #cbd5e0;
+        }
+
+        .workspace-container {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            background: #edf2f7;
+            cursor: grab;
+        }
+
+        .workspace-container.panning {
+            cursor: grabbing;
+        }
+
+        .workspace {
+            position: absolute;
+            width: 100000px;
+            height: 100000px;
+            cursor: grab;
+            transform-origin: 0 0;
+            left: -50000px;
+            top: -50000px;
+        }
+
+        .workspace.panning {
+            cursor: grabbing;
+        }
+
+        .page-box {
+            position: absolute;
+            width: 80px;
+            height: 50px;
+            background: white;
+            border: 2px solid #cbd5e0;
+            border-radius: 6px;
+            display: flex;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            transition: box-shadow 0.2s;
+            user-select: none;
+        }
+
+        .page-box:hover {
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        }
+
+        .page-box.dragging {
+            opacity: 0.7;
+            cursor: grabbing;
+            z-index: 1000;
+        }
+
+        .page-drag-area {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: grab;
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #2d3748;
+            border-right: 1px dashed #cbd5e0;
+        }
+
+        .page-link-area {
+            width: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            background: #f7fafc;
+            border-radius: 0 4px 4px 0;
+            transition: background 0.2s;
+        }
+
+        .page-link-area:hover {
+            background: #667eea;
+        }
+
+        .page-link-area:hover::after {
+            filter: brightness(0) invert(1);
+        }
+
+        .page-link-area::after {
+            content: '🔗';
+            font-size: 0.9rem;
+        }
+
+        .zoom-indicator {
+            position: absolute;
+            bottom: 1rem;
+            right: 1rem;
+            background: white;
+            padding: 0.4rem 0.8rem;
+            border-radius: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            font-size: 0.8rem;
+            color: #718096;
+            pointer-events: none;
+        }
+
+        .hint {
+            position: absolute;
+            top: 1rem;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(255, 255, 255, 0.95);
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            font-size: 0.85rem;
+            color: #4a5568;
+            pointer-events: none;
+            opacity: 0;
+            animation: fadeInOut 4s ease-in-out;
+        }
+
+        @keyframes fadeInOut {
+            0%, 100% { opacity: 0; }
+            10%, 90% { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <span class="title">Workspace: {{ username }}</span>
+        <span class="divider">|</span>
+        <a href="{{ url_for('index') }}">All Pages</a>
+        <a href="{{ url_for('subjects_list') }}">All Subjects</a>
+        <span class="divider">|</span>
+        {% for user in workspace_users %}
+            <a href="{{ url_for('user_workspace', username=user) }}">{{ user }}</a>
+        {% endfor %}
+        <span class="divider">|</span>
+        <a href="{{ url_for('logout') }}">Logout</a>
+    </nav>
+
+    <div class="workspace-container">
+        <div class="workspace" id="workspace"></div>
+        <div class="zoom-indicator" id="zoomIndicator">100%</div>
+        <div class="hint" id="hint">💡 Drag background to pan | Scroll to zoom | Drag boxes to arrange</div>
+    </div>
+
+    <script>
+        // Configuration
+        const TOTAL_PAGES = 100;
+        const BOX_WIDTH = 80;
+        const BOX_HEIGHT = 50;
+        const SPACING_X = 140;
+        const SPACING_Y = 100;
+        const MARGIN_X = 100;
+        const MARGIN_Y = 80;
+        const USERNAME = {{ username|tojson }};
+        const SAVED_POSITIONS = {{ positions|tojson }};
+        const VIEW_STATE = {{ view_state|tojson }};
+
+        // State - load from saved view state, or use sensible defaults
+        let scale = VIEW_STATE.zoom || 1;
+        // If no saved view state, center on the initial grid
+        // The workspace is offset at (-50000, -50000), and boxes start around (100, 80)
+        // So we need to pan by ~50000 to bring them into view, centered nicely
+        const defaultPanX = 50000 - 200; // Offset to roughly center the grid
+        const defaultPanY = 50000 - 200;
+        let panX = (VIEW_STATE.pan_x !== 0 || VIEW_STATE.pan_y !== 0 || VIEW_STATE.zoom !== 1) ? VIEW_STATE.pan_x : defaultPanX;
+        let panY = (VIEW_STATE.pan_x !== 0 || VIEW_STATE.pan_y !== 0 || VIEW_STATE.zoom !== 1) ? VIEW_STATE.pan_y : defaultPanY;
+        let isPanning = false;
+        let panStartX = 0;
+        let panStartY = 0;
+        let draggedElement = null;
+        let dragOffsetX = 0;
+        let dragOffsetY = 0;
+
+        const workspace = document.getElementById('workspace');
+        const zoomIndicator = document.getElementById('zoomIndicator');
+
+        // Calculate optimal rectangular layout based on screen size
+        function calculateLayout() {
+            const container = document.querySelector('.workspace-container');
+            const viewWidth = container.clientWidth;
+            const viewHeight = container.clientHeight;
+
+            const availableWidth = viewWidth - 2 * MARGIN_X;
+            const boxesPerRow = Math.max(8, Math.min(15, Math.floor(availableWidth / SPACING_X)));
+            const numRows = Math.ceil(TOTAL_PAGES / boxesPerRow);
+
+            return { boxesPerRow, numRows };
+        }
+
+        // Save position to database
+        async function savePosition(pageId, x, y) {
+            try {
+                const response = await fetch(`/user/${USERNAME}/update-position`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        page_id: pageId,
+                        x: x,
+                        y: y
+                    })
+                });
+
+                const data = await response.json();
+                if (!data.success) {
+                    console.error('Failed to save position:', data.error);
+                }
+            } catch (error) {
+                console.error('Error saving position:', error);
+            }
+        }
+
+        // Debounced view state save
+        let viewStateSaveTimeout = null;
+        async function saveViewState() {
+            try {
+                const response = await fetch(`/user/${USERNAME}/update-view`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        pan_x: panX,
+                        pan_y: panY,
+                        zoom: scale
+                    })
+                });
+
+                const data = await response.json();
+                if (!data.success) {
+                    console.error('Failed to save view state:', data.error);
+                }
+            } catch (error) {
+                console.error('Error saving view state:', error);
+            }
+        }
+
+        function debouncedSaveViewState() {
+            if (viewStateSaveTimeout) {
+                clearTimeout(viewStateSaveTimeout);
+            }
+            viewStateSaveTimeout = setTimeout(saveViewState, 500);
+        }
+
+        // Create page boxes
+        function createPageBoxes() {
+            workspace.innerHTML = '';
+            const layout = calculateLayout();
+
+            for (let i = 1; i <= TOTAL_PAGES; i++) {
+                const box = document.createElement('div');
+                box.className = 'page-box';
+                box.dataset.page = i;
+
+                // Calculate default position in rectangular layout
+                const row = Math.floor((i - 1) / layout.boxesPerRow);
+                const col = (i - 1) % layout.boxesPerRow;
+                const defaultX = MARGIN_X + col * SPACING_X;
+                const defaultY = MARGIN_Y + row * SPACING_Y;
+
+                // Use saved position or default
+                const pos = SAVED_POSITIONS[i] || { x: defaultX, y: defaultY };
+                box.style.left = pos.x + 'px';
+                box.style.top = pos.y + 'px';
+
+                // Drag area (left side)
+                const dragArea = document.createElement('div');
+                dragArea.className = 'page-drag-area';
+                dragArea.textContent = i;
+                dragArea.addEventListener('mousedown', startDrag);
+
+                // Link area (right side)
+                const linkArea = document.createElement('div');
+                linkArea.className = 'page-link-area';
+                linkArea.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    window.open(`/pages/${i}`, '_blank');
+                });
+
+                box.appendChild(dragArea);
+                box.appendChild(linkArea);
+                workspace.appendChild(box);
+            }
+        }
+
+        // Drag functionality for page boxes
+        function startDrag(e) {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+
+            draggedElement = e.target.closest('.page-box');
+            draggedElement.classList.add('dragging');
+
+            const rect = draggedElement.getBoundingClientRect();
+            const workspaceRect = workspace.getBoundingClientRect();
+
+            dragOffsetX = (e.clientX - rect.left) / scale;
+            dragOffsetY = (e.clientY - rect.top) / scale;
+
+            document.addEventListener('mousemove', doDrag);
+            document.addEventListener('mouseup', stopDrag);
+        }
+
+        function doDrag(e) {
+            if (!draggedElement) return;
+
+            const workspaceRect = workspace.getBoundingClientRect();
+            const x = (e.clientX - workspaceRect.left) / scale - dragOffsetX;
+            const y = (e.clientY - workspaceRect.top) / scale - dragOffsetY;
+
+            draggedElement.style.left = x + 'px';
+            draggedElement.style.top = y + 'px';
+        }
+
+        function stopDrag(e) {
+            if (draggedElement) {
+                draggedElement.classList.remove('dragging');
+
+                // Save position to database
+                const pageId = parseInt(draggedElement.dataset.page);
+                const x = parseFloat(draggedElement.style.left);
+                const y = parseFloat(draggedElement.style.top);
+                savePosition(pageId, x, y);
+
+                draggedElement = null;
+            }
+            document.removeEventListener('mousemove', doDrag);
+            document.removeEventListener('mouseup', stopDrag);
+        }
+
+        // Pan functionality - handle at container level so you can pan anywhere
+        document.querySelector('.workspace-container').addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            // Only start panning if clicking on workspace or container background (not on page boxes)
+            if (e.target === workspace ||
+                e.target.classList.contains('workspace') ||
+                e.target.classList.contains('workspace-container')) {
+                isPanning = true;
+                panStartX = e.clientX - panX;
+                panStartY = e.clientY - panY;
+                document.querySelector('.workspace-container').classList.add('panning');
+            }
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (isPanning) {
+                panX = e.clientX - panStartX;
+                panY = e.clientY - panStartY;
+                updateTransform();
+            }
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (isPanning) {
+                isPanning = false;
+                document.querySelector('.workspace-container').classList.remove('panning');
+                // Save view state after panning
+                debouncedSaveViewState();
+            }
+        });
+
+        // Zoom functionality
+        const WORKSPACE_OFFSET_X = -50000;
+        const WORKSPACE_OFFSET_Y = -50000;
+
+        document.querySelector('.workspace-container').addEventListener('wheel', (e) => {
+            e.preventDefault();
+
+            const delta = e.deltaY > 0 ? 0.9 : 1.1;
+            const newScale = Math.max(0.1, Math.min(3, scale * delta));
+
+            // Zoom toward mouse position (relative to viewport/container)
+            const container = document.querySelector('.workspace-container');
+            const containerRect = container.getBoundingClientRect();
+            const mouseX = e.clientX - containerRect.left;
+            const mouseY = e.clientY - containerRect.top;
+
+            // Calculate workspace coordinate under mouse
+            // viewport = WORKSPACE_OFFSET + panX + workspace_x * scale
+            // workspace_x = (viewport - WORKSPACE_OFFSET - panX) / scale
+            const workspaceX = (mouseX - WORKSPACE_OFFSET_X - panX) / scale;
+            const workspaceY = (mouseY - WORKSPACE_OFFSET_Y - panY) / scale;
+
+            // Adjust pan so that the same workspace point stays under the mouse
+            // mouseX = WORKSPACE_OFFSET + newPanX + workspaceX * newScale
+            panX = mouseX - WORKSPACE_OFFSET_X - workspaceX * newScale;
+            panY = mouseY - WORKSPACE_OFFSET_Y - workspaceY * newScale;
+
+            scale = newScale;
+            updateTransform();
+
+            // Save view state after zooming
+            debouncedSaveViewState();
+        }, { passive: false });
+
+        function updateTransform() {
+            workspace.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+            zoomIndicator.textContent = `${Math.round(scale * 100)}%`;
+        }
+
+        // Initialize
+        createPageBoxes();
+        updateTransform();
+
+        // Show hint on first load
+        setTimeout(() => {
+            document.getElementById('hint').style.animation = 'fadeInOut 4s ease-in-out';
+        }, 500);
+    </script>
+</body>
+</html>
+'''
+
 SUBJECT_DETAIL_TEMPLATE = '''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -433,3 +904,471 @@ SUBJECT_DETAIL_TEMPLATE = '''<!DOCTYPE html>
             </div>
         {% endif %}
 ''' + COMMON_FOOTER
+
+WORKSPACE_TEMPLATE = '''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Puzzle Solver - {{ username }}'s Workspace</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #edf2f7;
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .navbar {
+            background: white;
+            padding: 0.5rem 1.5rem;
+            border-bottom: 1px solid #e2e8f0;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+            font-size: 0.9rem;
+            flex-wrap: wrap;
+        }
+
+        .navbar .title {
+            color: #667eea;
+            font-weight: 600;
+            font-size: 1rem;
+        }
+
+        .navbar a {
+            color: #4a5568;
+            text-decoration: none;
+            padding: 0.25rem 0.5rem;
+            border-radius: 3px;
+            transition: background 0.2s;
+        }
+
+        .navbar a:hover {
+            background: #f7fafc;
+            color: #667eea;
+        }
+
+        .navbar .divider {
+            color: #cbd5e0;
+        }
+
+        .workspace-container {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            background: #edf2f7;
+            cursor: grab;
+        }
+
+        .workspace-container.panning {
+            cursor: grabbing;
+        }
+
+        .workspace {
+            position: absolute;
+            width: 100000px;
+            height: 100000px;
+            cursor: grab;
+            transform-origin: 0 0;
+            left: -50000px;
+            top: -50000px;
+        }
+
+        .workspace.panning {
+            cursor: grabbing;
+        }
+
+        .page-box {
+            position: absolute;
+            width: 80px;
+            height: 50px;
+            background: white;
+            border: 2px solid #cbd5e0;
+            border-radius: 6px;
+            display: flex;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            transition: box-shadow 0.2s;
+            user-select: none;
+        }
+
+        .page-box:hover {
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        }
+
+        .page-box.dragging {
+            opacity: 0.7;
+            cursor: grabbing;
+            z-index: 1000;
+        }
+
+        .page-drag-area {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: grab;
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #2d3748;
+            border-right: 1px dashed #cbd5e0;
+        }
+
+        .page-link-area {
+            width: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            background: #f7fafc;
+            border-radius: 0 4px 4px 0;
+            transition: background 0.2s;
+        }
+
+        .page-link-area:hover {
+            background: #667eea;
+        }
+
+        .page-link-area:hover::after {
+            filter: brightness(0) invert(1);
+        }
+
+        .page-link-area::after {
+            content: '🔗';
+            font-size: 0.9rem;
+        }
+
+        .zoom-indicator {
+            position: absolute;
+            bottom: 1rem;
+            right: 1rem;
+            background: white;
+            padding: 0.4rem 0.8rem;
+            border-radius: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            font-size: 0.8rem;
+            color: #718096;
+            pointer-events: none;
+        }
+
+        .hint {
+            position: absolute;
+            top: 1rem;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(255, 255, 255, 0.95);
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            font-size: 0.85rem;
+            color: #4a5568;
+            pointer-events: none;
+            opacity: 0;
+            animation: fadeInOut 4s ease-in-out;
+        }
+
+        @keyframes fadeInOut {
+            0%, 100% { opacity: 0; }
+            10%, 90% { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <span class="title">Workspace: {{ username }}</span>
+        <span class="divider">|</span>
+        <a href="{{ url_for('index') }}">All Pages</a>
+        <a href="{{ url_for('subjects_list') }}">All Subjects</a>
+        <span class="divider">|</span>
+        {% for user in workspace_users %}
+            <a href="{{ url_for('user_workspace', username=user) }}">{{ user }}</a>
+        {% endfor %}
+        <span class="divider">|</span>
+        <a href="{{ url_for('logout') }}">Logout</a>
+    </nav>
+
+    <div class="workspace-container">
+        <div class="workspace" id="workspace"></div>
+        <div class="zoom-indicator" id="zoomIndicator">100%</div>
+        <div class="hint" id="hint">💡 Drag background to pan | Scroll to zoom | Drag boxes to arrange</div>
+    </div>
+
+    <script>
+        // Configuration
+        const TOTAL_PAGES = 100;
+        const BOX_WIDTH = 80;
+        const BOX_HEIGHT = 50;
+        const SPACING_X = 140;
+        const SPACING_Y = 100;
+        const MARGIN_X = 100;
+        const MARGIN_Y = 80;
+        const USERNAME = {{ username|tojson }};
+        const SAVED_POSITIONS = {{ positions|tojson }};
+        const VIEW_STATE = {{ view_state|tojson }};
+
+        // State - load from saved view state, or use sensible defaults
+        let scale = VIEW_STATE.zoom || 1;
+        // If no saved view state, center on the initial grid
+        // The workspace is offset at (-50000, -50000), and boxes start around (100, 80)
+        // So we need to pan by ~50000 to bring them into view, centered nicely
+        const defaultPanX = 50000 - 200; // Offset to roughly center the grid
+        const defaultPanY = 50000 - 200;
+        let panX = (VIEW_STATE.pan_x !== 0 || VIEW_STATE.pan_y !== 0 || VIEW_STATE.zoom !== 1) ? VIEW_STATE.pan_x : defaultPanX;
+        let panY = (VIEW_STATE.pan_x !== 0 || VIEW_STATE.pan_y !== 0 || VIEW_STATE.zoom !== 1) ? VIEW_STATE.pan_y : defaultPanY;
+        let isPanning = false;
+        let panStartX = 0;
+        let panStartY = 0;
+        let draggedElement = null;
+        let dragOffsetX = 0;
+        let dragOffsetY = 0;
+
+        const workspace = document.getElementById('workspace');
+        const zoomIndicator = document.getElementById('zoomIndicator');
+
+        // Calculate optimal rectangular layout based on screen size
+        function calculateLayout() {
+            const container = document.querySelector('.workspace-container');
+            const viewWidth = container.clientWidth;
+            const viewHeight = container.clientHeight;
+
+            const availableWidth = viewWidth - 2 * MARGIN_X;
+            const boxesPerRow = Math.max(8, Math.min(15, Math.floor(availableWidth / SPACING_X)));
+            const numRows = Math.ceil(TOTAL_PAGES / boxesPerRow);
+
+            return { boxesPerRow, numRows };
+        }
+
+        // Save position to database
+        async function savePosition(pageId, x, y) {
+            try {
+                const response = await fetch(`/user/${USERNAME}/update-position`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        page_id: pageId,
+                        x: x,
+                        y: y
+                    })
+                });
+
+                const data = await response.json();
+                if (!data.success) {
+                    console.error('Failed to save position:', data.error);
+                }
+            } catch (error) {
+                console.error('Error saving position:', error);
+            }
+        }
+
+        // Debounced view state save
+        let viewStateSaveTimeout = null;
+        async function saveViewState() {
+            try {
+                const response = await fetch(`/user/${USERNAME}/update-view`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        pan_x: panX,
+                        pan_y: panY,
+                        zoom: scale
+                    })
+                });
+
+                const data = await response.json();
+                if (!data.success) {
+                    console.error('Failed to save view state:', data.error);
+                }
+            } catch (error) {
+                console.error('Error saving view state:', error);
+            }
+        }
+
+        function debouncedSaveViewState() {
+            if (viewStateSaveTimeout) {
+                clearTimeout(viewStateSaveTimeout);
+            }
+            viewStateSaveTimeout = setTimeout(saveViewState, 500);
+        }
+
+        // Create page boxes
+        function createPageBoxes() {
+            workspace.innerHTML = '';
+            const layout = calculateLayout();
+
+            for (let i = 1; i <= TOTAL_PAGES; i++) {
+                const box = document.createElement('div');
+                box.className = 'page-box';
+                box.dataset.page = i;
+
+                // Calculate default position in rectangular layout
+                const row = Math.floor((i - 1) / layout.boxesPerRow);
+                const col = (i - 1) % layout.boxesPerRow;
+                const defaultX = MARGIN_X + col * SPACING_X;
+                const defaultY = MARGIN_Y + row * SPACING_Y;
+
+                // Use saved position or default
+                const pos = SAVED_POSITIONS[i] || { x: defaultX, y: defaultY };
+                box.style.left = pos.x + 'px';
+                box.style.top = pos.y + 'px';
+
+                // Drag area (left side)
+                const dragArea = document.createElement('div');
+                dragArea.className = 'page-drag-area';
+                dragArea.textContent = i;
+                dragArea.addEventListener('mousedown', startDrag);
+
+                // Link area (right side)
+                const linkArea = document.createElement('div');
+                linkArea.className = 'page-link-area';
+                linkArea.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    window.open(`/pages/${i}`, '_blank');
+                });
+
+                box.appendChild(dragArea);
+                box.appendChild(linkArea);
+                workspace.appendChild(box);
+            }
+        }
+
+        // Drag functionality for page boxes
+        function startDrag(e) {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+
+            draggedElement = e.target.closest('.page-box');
+            draggedElement.classList.add('dragging');
+
+            const rect = draggedElement.getBoundingClientRect();
+            const workspaceRect = workspace.getBoundingClientRect();
+
+            dragOffsetX = (e.clientX - rect.left) / scale;
+            dragOffsetY = (e.clientY - rect.top) / scale;
+
+            document.addEventListener('mousemove', doDrag);
+            document.addEventListener('mouseup', stopDrag);
+        }
+
+        function doDrag(e) {
+            if (!draggedElement) return;
+
+            const workspaceRect = workspace.getBoundingClientRect();
+            const x = (e.clientX - workspaceRect.left) / scale - dragOffsetX;
+            const y = (e.clientY - workspaceRect.top) / scale - dragOffsetY;
+
+            draggedElement.style.left = x + 'px';
+            draggedElement.style.top = y + 'px';
+        }
+
+        function stopDrag(e) {
+            if (draggedElement) {
+                draggedElement.classList.remove('dragging');
+
+                // Save position to database
+                const pageId = parseInt(draggedElement.dataset.page);
+                const x = parseFloat(draggedElement.style.left);
+                const y = parseFloat(draggedElement.style.top);
+                savePosition(pageId, x, y);
+
+                draggedElement = null;
+            }
+            document.removeEventListener('mousemove', doDrag);
+            document.removeEventListener('mouseup', stopDrag);
+        }
+
+        // Pan functionality - handle at container level so you can pan anywhere
+        document.querySelector('.workspace-container').addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            // Only start panning if clicking on workspace or container background (not on page boxes)
+            if (e.target === workspace ||
+                e.target.classList.contains('workspace') ||
+                e.target.classList.contains('workspace-container')) {
+                isPanning = true;
+                panStartX = e.clientX - panX;
+                panStartY = e.clientY - panY;
+                document.querySelector('.workspace-container').classList.add('panning');
+            }
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (isPanning) {
+                panX = e.clientX - panStartX;
+                panY = e.clientY - panStartY;
+                updateTransform();
+            }
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (isPanning) {
+                isPanning = false;
+                document.querySelector('.workspace-container').classList.remove('panning');
+                // Save view state after panning
+                debouncedSaveViewState();
+            }
+        });
+
+        // Zoom functionality
+        const WORKSPACE_OFFSET_X = -50000;
+        const WORKSPACE_OFFSET_Y = -50000;
+
+        document.querySelector('.workspace-container').addEventListener('wheel', (e) => {
+            e.preventDefault();
+
+            const delta = e.deltaY > 0 ? 0.9 : 1.1;
+            const newScale = Math.max(0.1, Math.min(3, scale * delta));
+
+            // Zoom toward mouse position (relative to viewport/container)
+            const container = document.querySelector('.workspace-container');
+            const containerRect = container.getBoundingClientRect();
+            const mouseX = e.clientX - containerRect.left;
+            const mouseY = e.clientY - containerRect.top;
+
+            // Calculate workspace coordinate under mouse
+            // viewport = WORKSPACE_OFFSET + panX + workspace_x * scale
+            // workspace_x = (viewport - WORKSPACE_OFFSET - panX) / scale
+            const workspaceX = (mouseX - WORKSPACE_OFFSET_X - panX) / scale;
+            const workspaceY = (mouseY - WORKSPACE_OFFSET_Y - panY) / scale;
+
+            // Adjust pan so that the same workspace point stays under the mouse
+            // mouseX = WORKSPACE_OFFSET + newPanX + workspaceX * newScale
+            panX = mouseX - WORKSPACE_OFFSET_X - workspaceX * newScale;
+            panY = mouseY - WORKSPACE_OFFSET_Y - workspaceY * newScale;
+
+            scale = newScale;
+            updateTransform();
+
+            // Save view state after zooming
+            debouncedSaveViewState();
+        }, { passive: false });
+
+        function updateTransform() {
+            workspace.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+            zoomIndicator.textContent = `${Math.round(scale * 100)}%`;
+        }
+
+        // Initialize
+        createPageBoxes();
+        updateTransform();
+
+        // Show hint on first load
+        setTimeout(() => {
+            document.getElementById('hint').style.animation = 'fadeInOut 4s ease-in-out';
+        }, 500);
+    </script>
+</body>
+</html>
+'''

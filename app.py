@@ -1,10 +1,10 @@
-from flask import Flask, request, render_template_string, redirect, url_for, session, flash
+from flask import Flask, request, render_template_string, redirect, url_for, session, flash, jsonify
 import psycopg2
 import psycopg2.extras
 import os
 from functools import wraps
 
-from templates import LOGIN_TEMPLATE, PAGES_LIST_TEMPLATE, SUBJECTS_LIST_TEMPLATE, SUBJECT_DETAIL_TEMPLATE, PAGE_DETAIL_TEMPLATE
+from templates import LOGIN_TEMPLATE, PAGES_LIST_TEMPLATE, SUBJECTS_LIST_TEMPLATE, SUBJECT_DETAIL_TEMPLATE, PAGE_DETAIL_TEMPLATE, WORKSPACE_TEMPLATE
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key-change-this')
@@ -12,6 +12,8 @@ app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key-change-this')
 # Configuration
 PASSWORD = os.environ['APP_PASSWORD']
 DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://puzzle_user:puzzle_pass@localhost:5432/puzzle_db')
+# Comma-separated list of usernames for workspace users
+USERNAMES = os.environ.get('WORKSPACE_USERS', '').split(',') if os.environ.get('WORKSPACE_USERS') else []
 
 def get_db():
     """Get database connection"""
@@ -22,19 +24,19 @@ def init_db():
     """Initialize the database with tables and initial data"""
     conn = get_db()
     cursor = conn.cursor()
-    
+
     # Create tables
     cursor.execute('''CREATE TABLE IF NOT EXISTS pages (
         id INTEGER PRIMARY KEY,
         notes TEXT DEFAULT ''
     )''')
-    
+
     cursor.execute('''CREATE TABLE IF NOT EXISTS subjects (
         id SERIAL PRIMARY KEY,
         name TEXT UNIQUE,
         notes TEXT DEFAULT ''
     )''')
-    
+
     cursor.execute('''CREATE TABLE IF NOT EXISTS page_subjects (
         page_id INTEGER,
         subject_id INTEGER,
@@ -42,11 +44,63 @@ def init_db():
         FOREIGN KEY (page_id) REFERENCES pages (id),
         FOREIGN KEY (subject_id) REFERENCES subjects (id)
     )''')
-    
+
+    # Create users table
+    cursor.execute('''CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL
+    )''')
+
+    # Create user workspaces table (for future personal notes and view state)
+    cursor.execute('''CREATE TABLE IF NOT EXISTS user_workspaces (
+        user_id INTEGER PRIMARY KEY,
+        notes TEXT DEFAULT '',
+        pan_x REAL DEFAULT 0,
+        pan_y REAL DEFAULT 0,
+        zoom REAL DEFAULT 1.0,
+        FOREIGN KEY (user_id) REFERENCES users (id)
+    )''')
+
+    # Migrate: Add pan_x, pan_y, zoom columns if they don't exist
+    try:
+        cursor.execute("ALTER TABLE user_workspaces ADD COLUMN pan_x REAL DEFAULT 0")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+    try:
+        cursor.execute("ALTER TABLE user_workspaces ADD COLUMN pan_y REAL DEFAULT 0")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+    try:
+        cursor.execute("ALTER TABLE user_workspaces ADD COLUMN zoom REAL DEFAULT 1.0")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+    # Create user page positions table
+    cursor.execute('''CREATE TABLE IF NOT EXISTS user_page_positions (
+        user_id INTEGER,
+        page_id INTEGER,
+        x INTEGER NOT NULL,
+        y INTEGER NOT NULL,
+        PRIMARY KEY (user_id, page_id),
+        FOREIGN KEY (user_id) REFERENCES users (id),
+        FOREIGN KEY (page_id) REFERENCES pages (id)
+    )''')
+
     # Insert pages 1-100 if they don't exist
     for i in range(1, 101):
         cursor.execute("INSERT INTO pages (id, notes) VALUES (%s, '') ON CONFLICT (id) DO NOTHING", (i,))
-    
+
+    # Insert workspace users if they are configured via environment variable
+    for username in USERNAMES:
+        username = username.strip()
+        if username:
+            cursor.execute("INSERT INTO users (username) VALUES (%s) ON CONFLICT (username) DO NOTHING", (username,))
+
     conn.commit()
     conn.close()
 
@@ -58,6 +112,19 @@ def require_auth(f):
             return redirect(url_for('login_page'))
         return f(*args, **kwargs)
     return decorated_function
+
+@app.context_processor
+def inject_users():
+    """Make users list available to all templates"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor.execute('SELECT username FROM users ORDER BY username')
+        users = [row['username'] for row in cursor.fetchall()]
+        conn.close()
+        return dict(workspace_users=users)
+    except:
+        return dict(workspace_users=[])
 
 def process_notes_for_display(notes):
     """Convert [[Subject]] and {{Page X}} to HTML links"""
@@ -281,10 +348,10 @@ def subject_page(subject_id):
 def update_subject(subject_id):
     """Update subject notes"""
     notes = request.form.get('notes', '')
-    
+
     conn = get_db()
     cursor = conn.cursor()
-    
+
     try:
         cursor.execute('UPDATE subjects SET notes = %s WHERE id = %s', (notes, subject_id))
         conn.commit()
@@ -292,9 +359,161 @@ def update_subject(subject_id):
     except Exception as e:
         conn.rollback()
         flash(f'Error updating subject: {str(e)}')
-    
+
     conn.close()
     return redirect(url_for('subject_page', subject_id=subject_id))
+
+@app.route('/user/<username>')
+@require_auth
+def user_workspace(username):
+    """User workspace page"""
+    conn = get_db()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+
+    # Get user ID
+    cursor.execute('SELECT id FROM users WHERE username = %s', (username,))
+    user = cursor.fetchone()
+
+    if not user:
+        flash('User not found')
+        conn.close()
+        return redirect(url_for('index'))
+
+    user_id = user['id']
+
+    # Get all page positions for this user
+    cursor.execute('''
+        SELECT page_id, x, y
+        FROM user_page_positions
+        WHERE user_id = %s
+    ''', (user_id,))
+
+    positions = cursor.fetchall()
+
+    # Get view state (pan and zoom)
+    cursor.execute('''
+        SELECT pan_x, pan_y, zoom
+        FROM user_workspaces
+        WHERE user_id = %s
+    ''', (user_id,))
+
+    view_state = cursor.fetchone()
+    if not view_state:
+        # Create default view state if it doesn't exist
+        cursor.execute('''
+            INSERT INTO user_workspaces (user_id, pan_x, pan_y, zoom)
+            VALUES (%s, 0, 0, 1.0)
+        ''', (user_id,))
+        conn.commit()
+        view_state = {'pan_x': 0, 'pan_y': 0, 'zoom': 1.0}
+    else:
+        # Convert DictRow to plain dict for JSON serialization
+        view_state = dict(view_state)
+
+    conn.close()
+
+    # Convert to dict for easier JavaScript access
+    positions_dict = {row['page_id']: {'x': row['x'], 'y': row['y']} for row in positions}
+
+    return render_template_string(WORKSPACE_TEMPLATE,
+                                 username=username,
+                                 positions=positions_dict,
+                                 view_state=view_state)
+
+@app.route('/user/<username>/update-position', methods=['POST'])
+@require_auth
+def update_page_position(username):
+    """Update a single page position via AJAX"""
+    conn = get_db()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+
+    # Get user ID
+    cursor.execute('SELECT id FROM users WHERE username = %s', (username,))
+    user = cursor.fetchone()
+
+    if not user:
+        conn.close()
+        return jsonify({'success': False, 'error': 'User not found'}), 404
+
+    user_id = user['id']
+
+    # Get data from request
+    data = request.get_json()
+    page_id = data.get('page_id')
+    x = data.get('x')
+    y = data.get('y')
+
+    if page_id is None or x is None or y is None:
+        conn.close()
+        return jsonify({'success': False, 'error': 'Missing required fields'}), 400
+
+    try:
+        # Convert to integers
+        page_id = int(page_id)
+        x = int(round(x))
+        y = int(round(y))
+
+        # Upsert the position
+        cursor.execute('''
+            INSERT INTO user_page_positions (user_id, page_id, x, y)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (user_id, page_id)
+            DO UPDATE SET x = %s, y = %s
+        ''', (user_id, page_id, x, y, x, y))
+
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/user/<username>/update-view', methods=['POST'])
+@require_auth
+def update_view_state(username):
+    """Update view state (pan and zoom) via AJAX"""
+    conn = get_db()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+
+    # Get user ID
+    cursor.execute('SELECT id FROM users WHERE username = %s', (username,))
+    user = cursor.fetchone()
+
+    if not user:
+        conn.close()
+        return jsonify({'success': False, 'error': 'User not found'}), 404
+
+    user_id = user['id']
+
+    # Get data from request
+    data = request.get_json()
+    pan_x = data.get('pan_x')
+    pan_y = data.get('pan_y')
+    zoom = data.get('zoom')
+
+    if pan_x is None or pan_y is None or zoom is None:
+        conn.close()
+        return jsonify({'success': False, 'error': 'Missing required fields'}), 400
+
+    try:
+        # Upsert the view state
+        cursor.execute('''
+            INSERT INTO user_workspaces (user_id, pan_x, pan_y, zoom)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (user_id)
+            DO UPDATE SET pan_x = %s, pan_y = %s, zoom = %s
+        ''', (user_id, pan_x, pan_y, zoom, pan_x, pan_y, zoom))
+
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 if __name__ == '__main__':
     init_db()
