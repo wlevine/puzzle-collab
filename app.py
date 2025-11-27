@@ -61,25 +61,6 @@ def init_db():
         FOREIGN KEY (user_id) REFERENCES users (id)
     )''')
 
-    # Migrate: Add pan_x, pan_y, zoom columns if they don't exist
-    try:
-        cursor.execute("ALTER TABLE user_workspaces ADD COLUMN pan_x REAL DEFAULT 0")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-
-    try:
-        cursor.execute("ALTER TABLE user_workspaces ADD COLUMN pan_y REAL DEFAULT 0")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-
-    try:
-        cursor.execute("ALTER TABLE user_workspaces ADD COLUMN zoom REAL DEFAULT 1.0")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-
     # Create user page positions table
     cursor.execute('''CREATE TABLE IF NOT EXISTS user_page_positions (
         user_id INTEGER,
