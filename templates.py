@@ -468,14 +468,13 @@ WORKSPACE_TEMPLATE = '''<!DOCTYPE html>
             position: absolute;
             width: 100000px;
             height: 100000px;
-            cursor: grab;
             transform-origin: 0 0;
             left: -50000px;
             top: -50000px;
         }
 
-        .workspace.panning {
-            cursor: grabbing;
+        .workspace.creating {
+            cursor: crosshair !important;
         }
 
         .page-box {
@@ -550,6 +549,124 @@ WORKSPACE_TEMPLATE = '''<!DOCTYPE html>
             pointer-events: none;
         }
 
+        .add-textbox-btn {
+            padding: 0.4rem 0.8rem;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: background 0.2s;
+        }
+
+        .add-textbox-btn:hover {
+            background: #5568d3;
+        }
+
+        .add-textbox-btn.active {
+            background: #48bb78;
+        }
+
+        .text-box {
+            position: absolute;
+            background: rgba(255, 255, 255, 0.05);
+            border: 2px dashed #cbd5e0;
+            padding: 8px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #2d3748;
+            font-family: inherit;
+            resize: none;
+            overflow: hidden;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+            user-select: none;
+            cursor: default;
+            z-index: 1;
+        }
+
+        .text-box:hover {
+            border-color: #a0aec0;
+        }
+
+        .text-box.active {
+            border: 3px solid #667eea;
+            background: rgba(102, 126, 234, 0.08);
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2);
+            user-select: text;
+        }
+
+        .text-box.moving {
+            cursor: move !important;
+        }
+
+        .text-box.active .text-box-textarea {
+            cursor: text !important;
+        }
+
+        .text-box-textarea {
+            width: 100%;
+            background: transparent;
+            border: none;
+            padding: 0;
+            font-size: inherit;
+            font-weight: inherit;
+            color: inherit;
+            font-family: inherit;
+            resize: none;
+            overflow: hidden;
+            outline: none;
+        }
+
+        /* Border hit targets - these create generous clickable areas */
+        .border-top, .border-left, .border-bottom, .border-right {
+            position: absolute;
+            background: transparent;
+            z-index: 10;
+        }
+
+        /* Top border - for moving */
+        .border-top {
+            top: -8px;
+            left: -8px;
+            right: -8px;
+            height: 16px;
+            cursor: move !important;
+        }
+
+        /* Left border - for moving */
+        .border-left {
+            top: -8px;
+            left: -8px;
+            bottom: -8px;
+            width: 16px;
+            cursor: move !important;
+        }
+
+        /* Bottom border - for moving */
+        .border-bottom {
+            bottom: -8px;
+            left: -8px;
+            right: -8px;
+            height: 16px;
+            cursor: move !important;
+        }
+
+        /* Right border - for resizing */
+        .border-right {
+            top: -8px;
+            right: -8px;
+            bottom: -8px;
+            width: 16px;
+            cursor: ew-resize !important;
+        }
+
+        /* Visual feedback on hover */
+        .border-right:hover {
+            background: rgba(102, 126, 234, 0.3);
+        }
+
         .hint {
             position: absolute;
             top: 1rem;
@@ -575,6 +692,8 @@ WORKSPACE_TEMPLATE = '''<!DOCTYPE html>
 <body>
     <nav class="navbar">
         <span class="title">Workspace: {{ username }}</span>
+        <span class="divider">|</span>
+        <button class="add-textbox-btn" id="addTextBoxBtn">+ Text Box</button>
         <span class="divider">|</span>
         <a href="{{ url_for('index') }}">All Pages</a>
         <a href="{{ url_for('subjects_list') }}">All Subjects</a>
@@ -604,6 +723,7 @@ WORKSPACE_TEMPLATE = '''<!DOCTYPE html>
         const USERNAME = {{ username|tojson }};
         const SAVED_POSITIONS = {{ positions|tojson }};
         const VIEW_STATE = {{ view_state|tojson }};
+        const TEXT_BOXES = {{ text_boxes|tojson }};
 
         // State - load from saved view state, or use sensible defaults
         let scale = VIEW_STATE.zoom || 1;
@@ -852,8 +972,368 @@ WORKSPACE_TEMPLATE = '''<!DOCTYPE html>
             zoomIndicator.textContent = `${Math.round(scale * 100)}%`;
         }
 
+        // ===================
+        // TEXT BOX FUNCTIONALITY
+        // ===================
+
+        let isCreatingTextBox = false;
+        let activeTextBox = null;
+        let textBoxes = new Map();
+        let resizingTextBox = null;
+        let resizeStartX = 0;
+        let resizeStartWidth = 0;
+        let movingTextBox = null;
+        let moveStartX = 0;
+        let moveStartY = 0;
+
+        // Create text box element
+        function createTextBoxElement(id, x, y, width, text) {
+            const box = document.createElement('div');
+            box.className = 'text-box';
+            box.dataset.id = id;
+            box.style.left = x + 'px';
+            box.style.top = y + 'px';
+            box.style.width = width + 'px';
+
+            const textarea = document.createElement('textarea');
+            textarea.className = 'text-box-textarea';
+            textarea.value = text;
+            textarea.readOnly = true;
+
+            // Create four border hit targets
+            const borderTop = document.createElement('div');
+            borderTop.className = 'border-top';
+
+            const borderLeft = document.createElement('div');
+            borderLeft.className = 'border-left';
+
+            const borderBottom = document.createElement('div');
+            borderBottom.className = 'border-bottom';
+
+            const borderRight = document.createElement('div');
+            borderRight.className = 'border-right';
+
+            box.appendChild(textarea);
+            box.appendChild(borderTop);
+            box.appendChild(borderLeft);
+            box.appendChild(borderBottom);
+            box.appendChild(borderRight);
+
+            // Right border = resize
+            borderRight.addEventListener('mousedown', (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                startResize(e, box);
+            });
+
+            // Top, left, bottom borders = move
+            [borderTop, borderLeft, borderBottom].forEach(border => {
+                border.addEventListener('mousedown', (e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    if (!box.classList.contains('active')) {
+                        activateTextBox(box);
+                    }
+                    startMove(e, box);
+                });
+            });
+
+            // Click on box or textarea to activate (not on borders)
+            box.addEventListener('mousedown', (e) => {
+                // If click was on a border, let the border handle it
+                if (e.target.classList.contains('border-top') ||
+                    e.target.classList.contains('border-left') ||
+                    e.target.classList.contains('border-bottom') ||
+                    e.target.classList.contains('border-right')) {
+                    return;
+                }
+
+                // Click on textarea or box body
+                if (!box.classList.contains('active')) {
+                    e.stopPropagation();
+                    activateTextBox(box);
+                    // Start moving if not clicking on textarea
+                    if (e.target !== textarea) {
+                        startMove(e, box);
+                    }
+                }
+                // If already active and clicking textarea, allow text editing
+            });
+
+            // Auto-resize height as text changes
+            textarea.addEventListener('input', () => {
+                adjustTextBoxHeight(box);
+                debouncedSaveTextBox(box);
+            });
+
+            workspace.appendChild(box);
+            textBoxes.set(id, box);
+            adjustTextBoxHeight(box);
+            return box;
+        }
+
+        // Adjust text box height to fit content
+        function adjustTextBoxHeight(box) {
+            const textarea = box.querySelector('textarea');
+            textarea.style.height = 'auto';
+            textarea.style.height = textarea.scrollHeight + 'px';
+        }
+
+        // Activate text box for editing
+        function activateTextBox(box) {
+            // Deactivate any currently active box
+            if (activeTextBox && activeTextBox !== box) {
+                deactivateTextBox(activeTextBox);
+            }
+
+            box.classList.add('active');
+            const textarea = box.querySelector('textarea');
+            textarea.readOnly = false;
+            textarea.focus();
+            activeTextBox = box;
+        }
+
+        // Deactivate text box
+        function deactivateTextBox(box) {
+            box.classList.remove('active');
+            const textarea = box.querySelector('textarea');
+            textarea.readOnly = true;
+            activeTextBox = null;
+        }
+
+        // Start text box creation mode
+        document.getElementById('addTextBoxBtn').addEventListener('click', () => {
+            if (isCreatingTextBox) {
+                exitCreatingMode();
+            } else {
+                enterCreatingMode();
+            }
+        });
+
+        function enterCreatingMode() {
+            isCreatingTextBox = true;
+            document.getElementById('addTextBoxBtn').classList.add('active');
+            document.querySelector('.workspace-container').style.cursor = 'crosshair';
+            workspace.classList.add('creating');
+        }
+
+        function exitCreatingMode() {
+            isCreatingTextBox = false;
+            document.getElementById('addTextBoxBtn').classList.remove('active');
+            document.querySelector('.workspace-container').style.cursor = '';
+            workspace.classList.remove('creating');
+        }
+
+        // Handle click to place text box
+        document.querySelector('.workspace-container').addEventListener('click', (e) => {
+            if (isCreatingTextBox && (e.target.classList.contains('workspace') ||
+                e.target.classList.contains('workspace-container'))) {
+                const containerRect = document.querySelector('.workspace-container').getBoundingClientRect();
+                const clickX = e.clientX - containerRect.left;
+                const clickY = e.clientY - containerRect.top;
+
+                // Convert to workspace coordinates
+                const workspaceX = (clickX - WORKSPACE_OFFSET_X - panX) / scale;
+                const workspaceY = (clickY - WORKSPACE_OFFSET_Y - panY) / scale;
+
+                createNewTextBox(workspaceX, workspaceY);
+                exitCreatingMode();
+            }
+        });
+
+        // Create new text box via API
+        async function createNewTextBox(x, y) {
+            try {
+                const response = await fetch(`/user/${USERNAME}/text-box`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        x: Math.round(x),
+                        y: Math.round(y),
+                        width: 200,
+                        text: ''
+                    })
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    const box = createTextBoxElement(data.id, x, y, 200, '');
+                    activateTextBox(box);
+                } else {
+                    console.error('Failed to create text box:', data.error);
+                }
+            } catch (error) {
+                console.error('Error creating text box:', error);
+            }
+        }
+
+        // Resize functionality
+        function startResize(e, box) {
+            e.preventDefault();
+            e.stopPropagation();
+            resizingTextBox = box;
+            resizeStartX = e.clientX;
+            resizeStartWidth = parseInt(box.style.width);
+
+            document.addEventListener('mousemove', doResize);
+            document.addEventListener('mouseup', stopResize);
+        }
+
+        function doResize(e) {
+            if (!resizingTextBox) return;
+
+            const deltaX = (e.clientX - resizeStartX) / scale;
+            const newWidth = Math.max(100, resizeStartWidth + deltaX);
+            resizingTextBox.style.width = newWidth + 'px';
+            adjustTextBoxHeight(resizingTextBox);
+        }
+
+        function stopResize() {
+            if (resizingTextBox) {
+                debouncedSaveTextBox(resizingTextBox);
+                resizingTextBox = null;
+            }
+            document.removeEventListener('mousemove', doResize);
+            document.removeEventListener('mouseup', stopResize);
+        }
+
+        // Move functionality
+        function startMove(e, box) {
+            if (e.target.tagName === 'TEXTAREA') return; // Don't move when editing text
+
+            e.preventDefault();
+            e.stopPropagation();
+            movingTextBox = box;
+            moveStartX = e.clientX;
+            moveStartY = e.clientY;
+            box.classList.add('moving');
+
+            document.addEventListener('mousemove', doMove);
+            document.addEventListener('mouseup', stopMove);
+        }
+
+        function doMove(e) {
+            if (!movingTextBox) return;
+
+            const deltaX = (e.clientX - moveStartX) / scale;
+            const deltaY = (e.clientY - moveStartY) / scale;
+
+            const currentX = parseFloat(movingTextBox.style.left);
+            const currentY = parseFloat(movingTextBox.style.top);
+
+            movingTextBox.style.left = (currentX + deltaX) + 'px';
+            movingTextBox.style.top = (currentY + deltaY) + 'px';
+
+            moveStartX = e.clientX;
+            moveStartY = e.clientY;
+        }
+
+        function stopMove() {
+            if (movingTextBox) {
+                movingTextBox.classList.remove('moving');
+                debouncedSaveTextBox(movingTextBox);
+                movingTextBox = null;
+            }
+            document.removeEventListener('mousemove', doMove);
+            document.removeEventListener('mouseup', stopMove);
+        }
+
+        // Save text box to database (debounced)
+        let textBoxSaveTimeouts = new Map();
+
+        function debouncedSaveTextBox(box) {
+            const id = box.dataset.id;
+            if (textBoxSaveTimeouts.has(id)) {
+                clearTimeout(textBoxSaveTimeouts.get(id));
+            }
+            textBoxSaveTimeouts.set(id, setTimeout(() => saveTextBox(box), 500));
+        }
+
+        async function saveTextBox(box) {
+            const id = box.dataset.id;
+            const textarea = box.querySelector('textarea');
+
+            try {
+                const response = await fetch(`/user/${USERNAME}/text-box/${id}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        x: Math.round(parseFloat(box.style.left)),
+                        y: Math.round(parseFloat(box.style.top)),
+                        width: Math.round(parseFloat(box.style.width)),
+                        text: textarea.value
+                    })
+                });
+
+                const data = await response.json();
+                if (!data.success) {
+                    console.error('Failed to save text box:', data.error);
+                }
+            } catch (error) {
+                console.error('Error saving text box:', error);
+            }
+        }
+
+        // Delete text box
+        async function deleteTextBox(box) {
+            const id = box.dataset.id;
+
+            try {
+                const response = await fetch(`/user/${USERNAME}/text-box/${id}`, {
+                    method: 'DELETE'
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    box.remove();
+                    textBoxes.delete(parseInt(id));
+                    if (activeTextBox === box) {
+                        activeTextBox = null;
+                    }
+                } else {
+                    console.error('Failed to delete text box:', data.error);
+                }
+            } catch (error) {
+                console.error('Error deleting text box:', error);
+            }
+        }
+
+        // Handle Delete key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Delete' && activeTextBox) {
+                // Only delete if not editing text (textarea not focused)
+                const textarea = activeTextBox.querySelector('textarea');
+                if (document.activeElement !== textarea) {
+                    deleteTextBox(activeTextBox);
+                }
+            } else if (e.key === 'Escape' && activeTextBox) {
+                deactivateTextBox(activeTextBox);
+            } else if (e.key === 'Escape' && isCreatingTextBox) {
+                exitCreatingMode();
+            }
+        });
+
+        // Deactivate text box when clicking outside
+        document.addEventListener('click', (e) => {
+            if (activeTextBox && !e.target.closest('.text-box') && !e.target.closest('#addTextBoxBtn')) {
+                deactivateTextBox(activeTextBox);
+            }
+        });
+
+        // Load existing text boxes
+        function loadTextBoxes() {
+            TEXT_BOXES.forEach(tb => {
+                createTextBoxElement(tb.id, tb.x, tb.y, tb.width, tb.text);
+            });
+        }
+
         // Initialize
         createPageBoxes();
+        loadTextBoxes();
         updateTransform();
 
         // Show hint on first load
@@ -980,14 +1460,13 @@ WORKSPACE_TEMPLATE = '''<!DOCTYPE html>
             position: absolute;
             width: 100000px;
             height: 100000px;
-            cursor: grab;
             transform-origin: 0 0;
             left: -50000px;
             top: -50000px;
         }
 
-        .workspace.panning {
-            cursor: grabbing;
+        .workspace.creating {
+            cursor: crosshair !important;
         }
 
         .page-box {
@@ -1062,6 +1541,124 @@ WORKSPACE_TEMPLATE = '''<!DOCTYPE html>
             pointer-events: none;
         }
 
+        .add-textbox-btn {
+            padding: 0.4rem 0.8rem;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: background 0.2s;
+        }
+
+        .add-textbox-btn:hover {
+            background: #5568d3;
+        }
+
+        .add-textbox-btn.active {
+            background: #48bb78;
+        }
+
+        .text-box {
+            position: absolute;
+            background: rgba(255, 255, 255, 0.05);
+            border: 2px dashed #cbd5e0;
+            padding: 8px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #2d3748;
+            font-family: inherit;
+            resize: none;
+            overflow: hidden;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+            user-select: none;
+            cursor: default;
+            z-index: 1;
+        }
+
+        .text-box:hover {
+            border-color: #a0aec0;
+        }
+
+        .text-box.active {
+            border: 3px solid #667eea;
+            background: rgba(102, 126, 234, 0.08);
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2);
+            user-select: text;
+        }
+
+        .text-box.moving {
+            cursor: move !important;
+        }
+
+        .text-box.active .text-box-textarea {
+            cursor: text !important;
+        }
+
+        .text-box-textarea {
+            width: 100%;
+            background: transparent;
+            border: none;
+            padding: 0;
+            font-size: inherit;
+            font-weight: inherit;
+            color: inherit;
+            font-family: inherit;
+            resize: none;
+            overflow: hidden;
+            outline: none;
+        }
+
+        /* Border hit targets - these create generous clickable areas */
+        .border-top, .border-left, .border-bottom, .border-right {
+            position: absolute;
+            background: transparent;
+            z-index: 10;
+        }
+
+        /* Top border - for moving */
+        .border-top {
+            top: -8px;
+            left: -8px;
+            right: -8px;
+            height: 16px;
+            cursor: move !important;
+        }
+
+        /* Left border - for moving */
+        .border-left {
+            top: -8px;
+            left: -8px;
+            bottom: -8px;
+            width: 16px;
+            cursor: move !important;
+        }
+
+        /* Bottom border - for moving */
+        .border-bottom {
+            bottom: -8px;
+            left: -8px;
+            right: -8px;
+            height: 16px;
+            cursor: move !important;
+        }
+
+        /* Right border - for resizing */
+        .border-right {
+            top: -8px;
+            right: -8px;
+            bottom: -8px;
+            width: 16px;
+            cursor: ew-resize !important;
+        }
+
+        /* Visual feedback on hover */
+        .border-right:hover {
+            background: rgba(102, 126, 234, 0.3);
+        }
+
         .hint {
             position: absolute;
             top: 1rem;
@@ -1087,6 +1684,8 @@ WORKSPACE_TEMPLATE = '''<!DOCTYPE html>
 <body>
     <nav class="navbar">
         <span class="title">Workspace: {{ username }}</span>
+        <span class="divider">|</span>
+        <button class="add-textbox-btn" id="addTextBoxBtn">+ Text Box</button>
         <span class="divider">|</span>
         <a href="{{ url_for('index') }}">All Pages</a>
         <a href="{{ url_for('subjects_list') }}">All Subjects</a>
@@ -1116,6 +1715,7 @@ WORKSPACE_TEMPLATE = '''<!DOCTYPE html>
         const USERNAME = {{ username|tojson }};
         const SAVED_POSITIONS = {{ positions|tojson }};
         const VIEW_STATE = {{ view_state|tojson }};
+        const TEXT_BOXES = {{ text_boxes|tojson }};
 
         // State - load from saved view state, or use sensible defaults
         let scale = VIEW_STATE.zoom || 1;
@@ -1364,8 +1964,368 @@ WORKSPACE_TEMPLATE = '''<!DOCTYPE html>
             zoomIndicator.textContent = `${Math.round(scale * 100)}%`;
         }
 
+        // ===================
+        // TEXT BOX FUNCTIONALITY
+        // ===================
+
+        let isCreatingTextBox = false;
+        let activeTextBox = null;
+        let textBoxes = new Map();
+        let resizingTextBox = null;
+        let resizeStartX = 0;
+        let resizeStartWidth = 0;
+        let movingTextBox = null;
+        let moveStartX = 0;
+        let moveStartY = 0;
+
+        // Create text box element
+        function createTextBoxElement(id, x, y, width, text) {
+            const box = document.createElement('div');
+            box.className = 'text-box';
+            box.dataset.id = id;
+            box.style.left = x + 'px';
+            box.style.top = y + 'px';
+            box.style.width = width + 'px';
+
+            const textarea = document.createElement('textarea');
+            textarea.className = 'text-box-textarea';
+            textarea.value = text;
+            textarea.readOnly = true;
+
+            // Create four border hit targets
+            const borderTop = document.createElement('div');
+            borderTop.className = 'border-top';
+
+            const borderLeft = document.createElement('div');
+            borderLeft.className = 'border-left';
+
+            const borderBottom = document.createElement('div');
+            borderBottom.className = 'border-bottom';
+
+            const borderRight = document.createElement('div');
+            borderRight.className = 'border-right';
+
+            box.appendChild(textarea);
+            box.appendChild(borderTop);
+            box.appendChild(borderLeft);
+            box.appendChild(borderBottom);
+            box.appendChild(borderRight);
+
+            // Right border = resize
+            borderRight.addEventListener('mousedown', (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                startResize(e, box);
+            });
+
+            // Top, left, bottom borders = move
+            [borderTop, borderLeft, borderBottom].forEach(border => {
+                border.addEventListener('mousedown', (e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    if (!box.classList.contains('active')) {
+                        activateTextBox(box);
+                    }
+                    startMove(e, box);
+                });
+            });
+
+            // Click on box or textarea to activate (not on borders)
+            box.addEventListener('mousedown', (e) => {
+                // If click was on a border, let the border handle it
+                if (e.target.classList.contains('border-top') ||
+                    e.target.classList.contains('border-left') ||
+                    e.target.classList.contains('border-bottom') ||
+                    e.target.classList.contains('border-right')) {
+                    return;
+                }
+
+                // Click on textarea or box body
+                if (!box.classList.contains('active')) {
+                    e.stopPropagation();
+                    activateTextBox(box);
+                    // Start moving if not clicking on textarea
+                    if (e.target !== textarea) {
+                        startMove(e, box);
+                    }
+                }
+                // If already active and clicking textarea, allow text editing
+            });
+
+            // Auto-resize height as text changes
+            textarea.addEventListener('input', () => {
+                adjustTextBoxHeight(box);
+                debouncedSaveTextBox(box);
+            });
+
+            workspace.appendChild(box);
+            textBoxes.set(id, box);
+            adjustTextBoxHeight(box);
+            return box;
+        }
+
+        // Adjust text box height to fit content
+        function adjustTextBoxHeight(box) {
+            const textarea = box.querySelector('textarea');
+            textarea.style.height = 'auto';
+            textarea.style.height = textarea.scrollHeight + 'px';
+        }
+
+        // Activate text box for editing
+        function activateTextBox(box) {
+            // Deactivate any currently active box
+            if (activeTextBox && activeTextBox !== box) {
+                deactivateTextBox(activeTextBox);
+            }
+
+            box.classList.add('active');
+            const textarea = box.querySelector('textarea');
+            textarea.readOnly = false;
+            textarea.focus();
+            activeTextBox = box;
+        }
+
+        // Deactivate text box
+        function deactivateTextBox(box) {
+            box.classList.remove('active');
+            const textarea = box.querySelector('textarea');
+            textarea.readOnly = true;
+            activeTextBox = null;
+        }
+
+        // Start text box creation mode
+        document.getElementById('addTextBoxBtn').addEventListener('click', () => {
+            if (isCreatingTextBox) {
+                exitCreatingMode();
+            } else {
+                enterCreatingMode();
+            }
+        });
+
+        function enterCreatingMode() {
+            isCreatingTextBox = true;
+            document.getElementById('addTextBoxBtn').classList.add('active');
+            document.querySelector('.workspace-container').style.cursor = 'crosshair';
+            workspace.classList.add('creating');
+        }
+
+        function exitCreatingMode() {
+            isCreatingTextBox = false;
+            document.getElementById('addTextBoxBtn').classList.remove('active');
+            document.querySelector('.workspace-container').style.cursor = '';
+            workspace.classList.remove('creating');
+        }
+
+        // Handle click to place text box
+        document.querySelector('.workspace-container').addEventListener('click', (e) => {
+            if (isCreatingTextBox && (e.target.classList.contains('workspace') ||
+                e.target.classList.contains('workspace-container'))) {
+                const containerRect = document.querySelector('.workspace-container').getBoundingClientRect();
+                const clickX = e.clientX - containerRect.left;
+                const clickY = e.clientY - containerRect.top;
+
+                // Convert to workspace coordinates
+                const workspaceX = (clickX - WORKSPACE_OFFSET_X - panX) / scale;
+                const workspaceY = (clickY - WORKSPACE_OFFSET_Y - panY) / scale;
+
+                createNewTextBox(workspaceX, workspaceY);
+                exitCreatingMode();
+            }
+        });
+
+        // Create new text box via API
+        async function createNewTextBox(x, y) {
+            try {
+                const response = await fetch(`/user/${USERNAME}/text-box`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        x: Math.round(x),
+                        y: Math.round(y),
+                        width: 200,
+                        text: ''
+                    })
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    const box = createTextBoxElement(data.id, x, y, 200, '');
+                    activateTextBox(box);
+                } else {
+                    console.error('Failed to create text box:', data.error);
+                }
+            } catch (error) {
+                console.error('Error creating text box:', error);
+            }
+        }
+
+        // Resize functionality
+        function startResize(e, box) {
+            e.preventDefault();
+            e.stopPropagation();
+            resizingTextBox = box;
+            resizeStartX = e.clientX;
+            resizeStartWidth = parseInt(box.style.width);
+
+            document.addEventListener('mousemove', doResize);
+            document.addEventListener('mouseup', stopResize);
+        }
+
+        function doResize(e) {
+            if (!resizingTextBox) return;
+
+            const deltaX = (e.clientX - resizeStartX) / scale;
+            const newWidth = Math.max(100, resizeStartWidth + deltaX);
+            resizingTextBox.style.width = newWidth + 'px';
+            adjustTextBoxHeight(resizingTextBox);
+        }
+
+        function stopResize() {
+            if (resizingTextBox) {
+                debouncedSaveTextBox(resizingTextBox);
+                resizingTextBox = null;
+            }
+            document.removeEventListener('mousemove', doResize);
+            document.removeEventListener('mouseup', stopResize);
+        }
+
+        // Move functionality
+        function startMove(e, box) {
+            if (e.target.tagName === 'TEXTAREA') return; // Don't move when editing text
+
+            e.preventDefault();
+            e.stopPropagation();
+            movingTextBox = box;
+            moveStartX = e.clientX;
+            moveStartY = e.clientY;
+            box.classList.add('moving');
+
+            document.addEventListener('mousemove', doMove);
+            document.addEventListener('mouseup', stopMove);
+        }
+
+        function doMove(e) {
+            if (!movingTextBox) return;
+
+            const deltaX = (e.clientX - moveStartX) / scale;
+            const deltaY = (e.clientY - moveStartY) / scale;
+
+            const currentX = parseFloat(movingTextBox.style.left);
+            const currentY = parseFloat(movingTextBox.style.top);
+
+            movingTextBox.style.left = (currentX + deltaX) + 'px';
+            movingTextBox.style.top = (currentY + deltaY) + 'px';
+
+            moveStartX = e.clientX;
+            moveStartY = e.clientY;
+        }
+
+        function stopMove() {
+            if (movingTextBox) {
+                movingTextBox.classList.remove('moving');
+                debouncedSaveTextBox(movingTextBox);
+                movingTextBox = null;
+            }
+            document.removeEventListener('mousemove', doMove);
+            document.removeEventListener('mouseup', stopMove);
+        }
+
+        // Save text box to database (debounced)
+        let textBoxSaveTimeouts = new Map();
+
+        function debouncedSaveTextBox(box) {
+            const id = box.dataset.id;
+            if (textBoxSaveTimeouts.has(id)) {
+                clearTimeout(textBoxSaveTimeouts.get(id));
+            }
+            textBoxSaveTimeouts.set(id, setTimeout(() => saveTextBox(box), 500));
+        }
+
+        async function saveTextBox(box) {
+            const id = box.dataset.id;
+            const textarea = box.querySelector('textarea');
+
+            try {
+                const response = await fetch(`/user/${USERNAME}/text-box/${id}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        x: Math.round(parseFloat(box.style.left)),
+                        y: Math.round(parseFloat(box.style.top)),
+                        width: Math.round(parseFloat(box.style.width)),
+                        text: textarea.value
+                    })
+                });
+
+                const data = await response.json();
+                if (!data.success) {
+                    console.error('Failed to save text box:', data.error);
+                }
+            } catch (error) {
+                console.error('Error saving text box:', error);
+            }
+        }
+
+        // Delete text box
+        async function deleteTextBox(box) {
+            const id = box.dataset.id;
+
+            try {
+                const response = await fetch(`/user/${USERNAME}/text-box/${id}`, {
+                    method: 'DELETE'
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    box.remove();
+                    textBoxes.delete(parseInt(id));
+                    if (activeTextBox === box) {
+                        activeTextBox = null;
+                    }
+                } else {
+                    console.error('Failed to delete text box:', data.error);
+                }
+            } catch (error) {
+                console.error('Error deleting text box:', error);
+            }
+        }
+
+        // Handle Delete key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Delete' && activeTextBox) {
+                // Only delete if not editing text (textarea not focused)
+                const textarea = activeTextBox.querySelector('textarea');
+                if (document.activeElement !== textarea) {
+                    deleteTextBox(activeTextBox);
+                }
+            } else if (e.key === 'Escape' && activeTextBox) {
+                deactivateTextBox(activeTextBox);
+            } else if (e.key === 'Escape' && isCreatingTextBox) {
+                exitCreatingMode();
+            }
+        });
+
+        // Deactivate text box when clicking outside
+        document.addEventListener('click', (e) => {
+            if (activeTextBox && !e.target.closest('.text-box') && !e.target.closest('#addTextBoxBtn')) {
+                deactivateTextBox(activeTextBox);
+            }
+        });
+
+        // Load existing text boxes
+        function loadTextBoxes() {
+            TEXT_BOXES.forEach(tb => {
+                createTextBoxElement(tb.id, tb.x, tb.y, tb.width, tb.text);
+            });
+        }
+
         // Initialize
         createPageBoxes();
+        loadTextBoxes();
         updateTransform();
 
         // Show hint on first load

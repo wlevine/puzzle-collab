@@ -72,6 +72,17 @@ def init_db():
         FOREIGN KEY (page_id) REFERENCES pages (id)
     )''')
 
+    # Create user text boxes table
+    cursor.execute('''CREATE TABLE IF NOT EXISTS user_text_boxes (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        x INTEGER NOT NULL,
+        y INTEGER NOT NULL,
+        width INTEGER NOT NULL,
+        text TEXT DEFAULT '',
+        FOREIGN KEY (user_id) REFERENCES users (id)
+    )''')
+
     # Insert pages 1-100 if they don't exist
     for i in range(1, 101):
         cursor.execute("INSERT INTO pages (id, notes) VALUES (%s, '') ON CONFLICT (id) DO NOTHING", (i,))
@@ -391,15 +402,26 @@ def user_workspace(username):
         # Convert DictRow to plain dict for JSON serialization
         view_state = dict(view_state)
 
+    # Get all text boxes for this user
+    cursor.execute('''
+        SELECT id, x, y, width, text
+        FROM user_text_boxes
+        WHERE user_id = %s
+    ''', (user_id,))
+
+    text_boxes = cursor.fetchall()
+
     conn.close()
 
     # Convert to dict for easier JavaScript access
     positions_dict = {row['page_id']: {'x': row['x'], 'y': row['y']} for row in positions}
+    text_boxes_list = [dict(row) for row in text_boxes]
 
     return render_template_string(WORKSPACE_TEMPLATE,
                                  username=username,
                                  positions=positions_dict,
-                                 view_state=view_state)
+                                 view_state=view_state,
+                                 text_boxes=text_boxes_list)
 
 @app.route('/user/<username>/update-position', methods=['POST'])
 @require_auth
@@ -486,6 +508,139 @@ def update_view_state(username):
             ON CONFLICT (user_id)
             DO UPDATE SET pan_x = %s, pan_y = %s, zoom = %s
         ''', (user_id, pan_x, pan_y, zoom, pan_x, pan_y, zoom))
+
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/user/<username>/text-box', methods=['POST'])
+@require_auth
+def create_text_box(username):
+    """Create a new text box via AJAX"""
+    conn = get_db()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+
+    # Get user ID
+    cursor.execute('SELECT id FROM users WHERE username = %s', (username,))
+    user = cursor.fetchone()
+
+    if not user:
+        conn.close()
+        return jsonify({'success': False, 'error': 'User not found'}), 404
+
+    user_id = user['id']
+
+    # Get data from request
+    data = request.get_json()
+    x = data.get('x')
+    y = data.get('y')
+    width = data.get('width', 200)  # Default width
+    text = data.get('text', '')
+
+    if x is None or y is None:
+        conn.close()
+        return jsonify({'success': False, 'error': 'Missing required fields'}), 400
+
+    try:
+        # Insert the text box
+        cursor.execute('''
+            INSERT INTO user_text_boxes (user_id, x, y, width, text)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id
+        ''', (user_id, int(x), int(y), int(width), text))
+
+        text_box_id = cursor.fetchone()['id']
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'id': text_box_id})
+
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/user/<username>/text-box/<int:text_box_id>', methods=['PUT'])
+@require_auth
+def update_text_box(username, text_box_id):
+    """Update a text box via AJAX"""
+    conn = get_db()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+
+    # Get user ID
+    cursor.execute('SELECT id FROM users WHERE username = %s', (username,))
+    user = cursor.fetchone()
+
+    if not user:
+        conn.close()
+        return jsonify({'success': False, 'error': 'User not found'}), 404
+
+    user_id = user['id']
+
+    # Get data from request
+    data = request.get_json()
+
+    try:
+        # Build update query dynamically based on what's provided
+        updates = []
+        params = []
+
+        if 'x' in data:
+            updates.append('x = %s')
+            params.append(int(data['x']))
+        if 'y' in data:
+            updates.append('y = %s')
+            params.append(int(data['y']))
+        if 'width' in data:
+            updates.append('width = %s')
+            params.append(int(data['width']))
+        if 'text' in data:
+            updates.append('text = %s')
+            params.append(data['text'])
+
+        if not updates:
+            conn.close()
+            return jsonify({'success': False, 'error': 'No fields to update'}), 400
+
+        params.extend([user_id, text_box_id])
+        query = f"UPDATE user_text_boxes SET {', '.join(updates)} WHERE user_id = %s AND id = %s"
+
+        cursor.execute(query, params)
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/user/<username>/text-box/<int:text_box_id>', methods=['DELETE'])
+@require_auth
+def delete_text_box(username, text_box_id):
+    """Delete a text box via AJAX"""
+    conn = get_db()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+
+    # Get user ID
+    cursor.execute('SELECT id FROM users WHERE username = %s', (username,))
+    user = cursor.fetchone()
+
+    if not user:
+        conn.close()
+        return jsonify({'success': False, 'error': 'User not found'}), 404
+
+    user_id = user['id']
+
+    try:
+        cursor.execute('''
+            DELETE FROM user_text_boxes
+            WHERE user_id = %s AND id = %s
+        ''', (user_id, text_box_id))
 
         conn.commit()
         conn.close()
