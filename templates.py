@@ -372,11 +372,19 @@ PAGE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
         <form method="POST">
             <div class="form-group">
                 <label for="subjects">Subjects (comma-separated):</label>
-                <input type="text" id="subjects" name="subjects" value="{{ ', '.join(subjects_list) }}" 
+                <input type="text" id="subjects" name="subjects" value="{{ ', '.join(subjects_list) }}"
                        placeholder="e.g. Alexander, Paris, Murder">
                 <small>Enter character names, locations, events, etc.</small>
+                {% if subjects_with_ids %}
+                    <div style="margin-top: 10px; padding: 15px; background: #e6fffa; border-radius: 5px;">
+                        <strong>Related subjects:</strong>
+                        {% for subject in subjects_with_ids %}
+                            <a href="{{ url_for('subject_page', subject_id=subject.id) }}" class="cross-reference">{{ subject.name }}</a>{% if not loop.last %}, {% endif %}
+                        {% endfor %}
+                    </div>
+                {% endif %}
             </div>
-            
+
             <div class="form-group">
                 <label for="notes">Notes:</label>
                 <textarea id="notes" name="notes" placeholder="Add your notes about this page here...">{{ page.notes }}</textarea>

@@ -202,7 +202,7 @@ def page_detail(page_id):
     """Individual page view/edit"""
     conn = get_db()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    
+
     cursor.execute('''
         SELECT p.id, p.notes,
                STRING_AGG(s.name, ',') as subjects
@@ -212,20 +212,34 @@ def page_detail(page_id):
         WHERE p.id = %s
         GROUP BY p.id, p.notes
     ''', (page_id,))
-    
+
     page = cursor.fetchone()
-    conn.close()
-    
+
     if not page:
+        conn.close()
         flash('Page not found')
         return redirect(url_for('index'))
-    
+
     subjects_list = page['subjects'].split(',') if page['subjects'] else []
+
+    # Get subjects with IDs for linking
+    cursor.execute('''
+        SELECT s.id, s.name
+        FROM subjects s
+        JOIN page_subjects ps ON s.id = ps.subject_id
+        WHERE ps.page_id = %s
+        ORDER BY s.name
+    ''', (page_id,))
+
+    subjects_with_ids = cursor.fetchall()
+    conn.close()
+
     notes_html = process_notes_for_display(page['notes'])
-    
-    return render_template_string(PAGE_DETAIL_TEMPLATE, 
-                                page=page, 
+
+    return render_template_string(PAGE_DETAIL_TEMPLATE,
+                                page=page,
                                 subjects_list=subjects_list,
+                                subjects_with_ids=subjects_with_ids,
                                 notes_html=notes_html)
 
 @app.route('/pages/<int:page_id>', methods=['POST'])
