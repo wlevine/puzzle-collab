@@ -720,12 +720,14 @@ WORKSPACE_TEMPLATE = '''<!DOCTYPE html>
                 dragArea.textContent = i;
                 dragArea.addEventListener('mousedown', startDrag);
 
-                // Link area (right side)
-                const linkArea = document.createElement('div');
+                // Link area (right side) - use real <a> tag
+                const linkArea = document.createElement('a');
                 linkArea.className = 'page-link-area';
-                linkArea.addEventListener('click', (e) => {
+                linkArea.href = `/pages/${i}`;
+                linkArea.target = '_blank';
+                linkArea.addEventListener('mousedown', (e) => {
+                    // Prevent drag from starting when clicking the link
                     e.stopPropagation();
-                    window.open(`/pages/${i}`, '_blank');
                 });
 
                 box.appendChild(dragArea);
@@ -1230,12 +1232,14 @@ WORKSPACE_TEMPLATE = '''<!DOCTYPE html>
                 dragArea.textContent = i;
                 dragArea.addEventListener('mousedown', startDrag);
 
-                // Link area (right side)
-                const linkArea = document.createElement('div');
+                // Link area (right side) - use real <a> tag
+                const linkArea = document.createElement('a');
                 linkArea.className = 'page-link-area';
-                linkArea.addEventListener('click', (e) => {
+                linkArea.href = `/pages/${i}`;
+                linkArea.target = '_blank';
+                linkArea.addEventListener('mousedown', (e) => {
+                    // Prevent drag from starting when clicking the link
                     e.stopPropagation();
-                    window.open(`/pages/${i}`, '_blank');
                 });
 
                 box.appendChild(dragArea);
